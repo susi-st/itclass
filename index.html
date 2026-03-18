@@ -1,0 +1,1606 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>班級抽籤加分程式 (即時同步版)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', 'Noto Sans TC', sans-serif; }
+        .student-cell { transition: background-color 0.1s ease-in-out, transform 0.1s ease-in-out, box-shadow 0.2s ease; }
+        .student-cell .content-wrapper { cursor: pointer; }
+        .highlight-draw-green { transform: scale(1.05); box-shadow: 0 0 15px rgba(16, 185, 129, 0.7); }
+        .highlight-draw-pink { transform: scale(1.05); box-shadow: 0 0 15px rgba(236, 72, 153, 0.7); }
+        .highlight-winner { background-color: #fde047; transform: scale(1.1); font-weight: bold; border-width: 3px; border-color: #f97316; box-shadow: 0 0 15px #f97316; }
+        .drawn-student { background-color: #9ca3af !important; color: white; }
+        .btn { transition: all 0.2s ease; }
+        .btn:active { transform: scale(0.95); }
+        #immunityToggle:checked::before, #ranmaToggle:checked::before { transform: translateX(1rem); }
+        #scoreGrid { aspect-ratio: 1 / 1; }
+        .score-cell { aspect-ratio: 1 / 1; transition: transform 0.2s ease-in-out; }
+        .score-cell.can-hover:hover { transform: scale(1.05); }
+        @keyframes blink-effect { 50% { opacity: 0.3; } }
+        .blinking { animation: blink-effect 0.5s step-end 3; }
+        .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.5); display: flex; justify-content: center; align-items: center; z-index: 1000; }
+        .modal-content { background-color: white; padding: 2rem; border-radius: 1rem; box-shadow: 0 10px 25px rgba(0,0,0,0.1); width: 90%; max-width: 500px; }
+        .batch-reason-btn.selected-pos { background-color: #15803d; color: white; transform: scale(0.95); }
+        .batch-reason-btn.selected-neg { background-color: #be185d; color: white; transform: scale(0.95); }
+        .score-bar-unit { width: 4px; height: 16px; margin-right: 1px; display: inline-block; border-radius: 1px; }
+        .score-bar-green { background-color: #22c55e; }
+        .score-bar-red { background-color: #ef4444; }
+        /* 載入/同步指示器樣式 */
+        #syncIndicator { position: fixed; bottom: 20px; right: 20px; padding: 8px 16px; border-radius: 999px; font-size: 14px; font-weight: bold; color: white; z-index: 9999; display: flex; align-items: center; gap: 8px; transition: opacity 0.3s; opacity: 0; pointer-events: none; }
+        #syncIndicator.visible { opacity: 1; }
+        #syncIndicator.syncing { background-color: #3b82f6; box-shadow: 0 4px 6px -1px rgba(59, 130, 246, 0.5); }
+        #syncIndicator.success { background-color: #10b981; box-shadow: 0 4px 6px -1px rgba(16, 185, 129, 0.5); }
+        #syncIndicator.error { background-color: #ef4444; box-shadow: 0 4px 6px -1px rgba(239, 68, 68, 0.5); }
+        .spinner { width: 16px; height: 16px; border: 2px solid #ffffff; border-bottom-color: transparent; border-radius: 50%; display: inline-block; box-sizing: border-box; animation: rotation 1s linear infinite; }
+        @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 p-4 sm:p-6 md:p-8">
+
+    <!-- 即時同步指示器 -->
+    <div id="syncIndicator">
+        <span class="spinner" id="syncSpinner"></span>
+        <span id="syncText">同步中...</span>
+    </div>
+
+    <div id="app-container" class="max-w-7xl mx-auto space-y-8">
+        
+        <!-- 系統警告區塊 -->
+        <div id="systemWarning" class="hidden bg-red-50 border-l-4 border-red-500 p-4 rounded-lg shadow-sm mb-6">
+            <div class="flex items-start">
+                <div class="flex-shrink-0 pt-0.5">
+                    <svg class="h-5 w-5 text-red-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
+                    </svg>
+                </div>
+                <div class="ml-3">
+                    <h3 class="text-sm font-bold text-red-800">雲端資料庫連線失敗</h3>
+                    <div class="mt-1 text-sm text-red-700 space-y-1">
+                        <p>無法讀取或寫入後台紀錄。這通常是因為網路問題或 GAS 權限未開放。</p>
+                        <p class="font-semibold">※ 系統已自動切換為【本機暫存模式】，班級名單已正常載入，但積分紀錄僅會暫存於此電腦中，無法同步至雲端。</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 標題與狀態區 -->
+        <div id="fileImportSection" class="bg-white p-6 rounded-2xl shadow-lg">
+            <h1 class="text-3xl font-bold text-center text-gray-700 mb-4">班級抽籤加分程式 (雲端即時版)</h1>
+            <div id="loadingStatus" class="text-center text-blue-500 font-bold flex items-center justify-center gap-2">
+                <span class="spinner !border-blue-500 !border-b-transparent"></span>
+                正在連線至雲端資料庫並載入名單...
+            </div>
+        </div>
+        
+        <!-- 抽籤與名單區塊容器 -->
+        <div id="draw-area" class="hidden">
+            <!-- 加扣分區 -->
+            <div id="resultSection" class="bg-white p-6 rounded-2xl shadow-lg hidden text-center mb-8">
+                <h2 id="resultTitle" class="text-4xl font-extrabold mb-6"></h2>
+                 <div id="scoreGrid" class="grid grid-cols-3 gap-2 w-full max-w-sm sm:max-w-md mx-auto"></div>
+            </div>
+
+            <!-- 班級選擇與學生名單區 -->
+            <div id="main-content" class="bg-white p-6 rounded-2xl shadow-lg">
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+                    <div class="flex-grow flex items-center gap-3">
+                        <div class="flex-grow">
+                            <label for="classSelector" class="block mb-2 text-sm font-medium text-gray-900">選擇班級</label>
+                            <select id="classSelector" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5"></select>
+                        </div>
+                        <div id="autoClassIndicator" class="hidden flex-shrink-0 mt-6">
+                            <span class="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-1 rounded border border-green-300" title="已根據目前課表自動為您切換班級">✨ 自動定位</span>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-4 self-end flex-wrap justify-end">
+                        <div class="flex items-center space-x-2">
+                            <label for="immunityToggle" class="text-sm font-medium text-gray-700">豁免抽籤</label>
+                            <input type="checkbox" id="immunityToggle" class="h-6 w-11 appearance-none rounded-full bg-gray-300 checked:bg-green-500 transition-colors duration-200 ease-in-out cursor-pointer relative before:content-[''] before:h-5 before:w-5 before:rounded-full before:bg-white before:shadow-md before:absolute before:top-0.5 before:left-0.5 before:transition-transform before:duration-200 ease-in-out" checked>
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            <label for="ranmaToggle" class="text-sm font-medium text-gray-700">亂馬1/2</label>
+                            <input type="checkbox" id="ranmaToggle" class="h-6 w-11 appearance-none rounded-full bg-gray-300 checked:bg-blue-500 transition-colors duration-200 ease-in-out cursor-pointer relative before:content-[''] before:h-5 before:w-5 before:rounded-full before:bg-white before:shadow-md before:absolute before:top-0.5 before:left-0.5 before:transition-transform before:duration-200 ease-in-out">
+                        </div>
+                    </div>
+                    <button id="drawButton" class="w-full sm:w-auto bg-blue-500 hover:bg-blue-600 text-white font-bold py-2.5 px-8 rounded-lg shadow-md btn self-end">
+                        開始抽籤
+                    </button>
+                </div>
+                
+                <!-- 主名單標題與過濾器 -->
+                <div class="flex flex-col sm:flex-row items-center justify-between mb-4 gap-2 border-b pb-2">
+                    <h2 id="gridTitle" class="text-xl font-bold text-gray-800 flex-shrink-0 m-0"></h2>
+                    <div id="selectionFilters" class="flex justify-end items-center gap-2 flex-wrap">
+                        <button id="selectAllBtn" class="bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-semibold py-1 px-3 rounded-full btn transition-colors">全選</button>
+                        <button id="selectBoysBtn" class="bg-blue-100 hover:bg-blue-200 text-blue-700 text-xs font-semibold py-1 px-3 rounded-full btn transition-colors">男生</button>
+                        <button id="selectGirlsBtn" class="bg-pink-100 hover:bg-pink-200 text-pink-700 text-xs font-semibold py-1 px-3 rounded-full btn transition-colors">女生</button>
+                        <button id="deselectAllBtn" class="bg-gray-400 hover:bg-gray-500 text-white text-xs font-semibold py-1 px-3 rounded-full btn transition-colors">取消勾選</button>
+                    </div>
+                </div>
+
+                <div id="studentGrid" class="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 gap-3 text-center"></div>
+                
+                <div id="batchScoreContainer" class="text-center mt-4 hidden">
+                    <button id="batchScoreButton" class="bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-2 px-6 rounded-lg shadow-md btn">
+                        為已選學生加分
+                    </button>
+                </div>
+
+                <!-- 移動箭頭區 -->
+                <div class="flex justify-center items-center gap-8 my-6">
+                    <button id="moveUpBtn" class="w-32 sm:w-40 h-10 sm:h-12 bg-gray-200 hover:bg-gray-300 text-gray-600 rounded-xl shadow-sm transition-transform transform active:scale-95 flex justify-center items-center text-xl sm:text-2xl font-black btn" title="移回名單">▲</button>
+                    <button id="moveDownBtn" class="w-32 sm:w-40 h-10 sm:h-12 bg-gray-200 hover:bg-gray-300 text-gray-600 rounded-xl shadow-sm transition-transform transform active:scale-95 flex justify-center items-center text-xl sm:text-2xl font-black btn" title="移出抽籤">▼</button>
+                </div>
+
+                <!-- 不參與抽籤區 -->
+                <div id="excludedArea" class="bg-gray-50 border-2 border-dashed border-gray-300 rounded-2xl p-6 min-h-[8rem]">
+                    <div class="flex flex-col sm:flex-row items-center justify-between mb-4 gap-2 border-b border-gray-200 pb-2">
+                        <h3 class="text-sm font-bold text-gray-500 tracking-widest m-0 flex-shrink-0">不參與抽籤區</h3>
+                        <div id="excludedSelectionFilters" class="flex justify-end items-center gap-2 flex-wrap">
+                            <button id="exSelectAllBtn" class="bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-semibold py-1 px-3 rounded-full btn transition-colors">全選</button>
+                            <button id="exSelectBoysBtn" class="bg-blue-100 hover:bg-blue-200 text-blue-700 text-xs font-semibold py-1 px-3 rounded-full btn transition-colors">男生</button>
+                            <button id="exSelectGirlsBtn" class="bg-pink-100 hover:bg-pink-200 text-pink-700 text-xs font-semibold py-1 px-3 rounded-full btn transition-colors">女生</button>
+                            <button id="exDeselectAllBtn" class="bg-gray-400 hover:bg-gray-500 text-white text-xs font-semibold py-1 px-3 rounded-full btn transition-colors">取消勾選</button>
+                        </div>
+                    </div>
+                    <div id="excludedStudentGrid" class="flex flex-wrap gap-3 justify-center"></div>
+                </div>
+                
+                <!-- 學生積分概況區 -->
+                <div id="scoreOverviewSection" class="mt-8 border-t pt-6">
+                    <div class="grid grid-cols-3 items-center mb-4">
+                        <div></div> <!-- 用於版面平衡的空區塊 -->
+                        <h3 class="text-xl font-bold text-center text-gray-700 m-0">學生積分概況</h3>
+                        <div class="text-right">
+                            <button id="exportScoreBtn" class="bg-green-500 hover:bg-green-600 text-white font-bold py-1.5 px-3 rounded-lg text-sm shadow-sm transition-colors btn inline-flex items-center justify-center gap-1" title="匯出本班積分">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                                匯出
+                            </button>
+                        </div>
+                    </div>
+                    <div id="scoreOverviewStatus" class="text-center text-gray-500 mb-4">正在載入積分數據...</div>
+                    <div id="scoreOverviewList" class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3"></div>
+                    
+                    <!-- 學生原始記錄列表 -->
+                    <div id="scoreRawRecordsContainer" class="mt-8">
+                        <div class="flex flex-col sm:flex-row items-center justify-between mb-3 gap-2">
+                            <div class="flex-1 hidden sm:block"></div>
+                            <h4 class="text-lg font-bold text-gray-700 text-center flex-none sm:flex-1">本班原始加減分記錄</h4>
+                            <div class="flex-1 flex justify-end items-center gap-1 sm:gap-2 w-full sm:w-auto">
+                                <button id="rawPrevBtn" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-3 py-1 rounded font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-xs">▲</button>
+                                <div class="flex items-center justify-center gap-1 text-xs text-gray-600 font-medium whitespace-nowrap">
+                                    <span>第</span>
+                                    <select id="rawPageSelect" class="bg-white border border-gray-300 text-gray-900 rounded focus:ring-blue-500 focus:border-blue-500 cursor-pointer py-0.5 px-1 min-w-[2.5rem] text-center"></select>
+                                    <span id="rawPageTotal">/ 1 頁 (共 0 筆)</span>
+                                </div>
+                                <button id="rawNextBtn" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-3 py-1 rounded font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-xs">▼</button>
+                            </div>
+                        </div>
+                        <div class="overflow-x-auto text-sm border border-gray-200 rounded-lg bg-white shadow-sm">
+                            <table id="scoreRawRecordsTable" class="w-full text-left text-gray-500">
+                                <thead class="text-xs text-gray-700 uppercase bg-gray-50 border-b border-gray-200">
+                                    <tr>
+                                        <th scope="col" class="px-3 py-2">座號</th>
+                                        <th scope="col" class="px-3 py-2">姓名</th>
+                                        <th scope="col" class="px-3 py-2">加減分</th>
+                                        <th scope="col" class="px-3 py-2">理由/事項</th>
+                                        <th scope="col" class="px-3 py-2">日期/時間</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                            <div id="noRawRecordsMessage" class="text-center text-gray-500 py-4 hidden">本班級尚無詳細記錄。</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 歷史記錄區 -->
+        <div id="historySection" class="bg-white p-6 rounded-2xl shadow-lg hidden">
+            <div class="flex flex-col md:flex-row justify-between items-center mb-4 gap-4">
+                 <div class="flex items-center gap-4 flex-wrap justify-center md:justify-start">
+                     <h2 class="text-2xl font-bold">歷史記錄</h2>
+                     <div class="flex items-center gap-2 bg-gray-50 p-1.5 rounded-lg border border-gray-200">
+                         <label for="historyPerPageSelect" class="text-sm font-medium text-gray-600 whitespace-nowrap ml-1">顯示筆數：</label>
+                         <select id="historyPerPageSelect" class="bg-white border border-gray-300 text-gray-900 text-sm rounded-md focus:ring-blue-500 focus:border-blue-500 block p-1.5 cursor-pointer">
+                             <option value="5" selected>5 筆</option>
+                             <option value="10">10 筆</option>
+                             <option value="15">15 筆</option>
+                             <option value="20">20 筆</option>
+                             <option value="all">全部</option>
+                         </select>
+                     </div>
+                 </div>
+                 <div class="flex items-center gap-4 flex-wrap justify-center md:justify-end">
+                     <div class="flex items-center gap-1 sm:gap-2 bg-gray-50 p-1.5 rounded-lg border border-gray-200">
+                        <button id="historyPrevBtn" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-3 py-1 rounded font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm">▲</button>
+                        <div class="flex items-center justify-center gap-1 text-sm text-gray-600 font-medium whitespace-nowrap">
+                            <span>第</span>
+                            <select id="historyPageSelect" class="bg-white border border-gray-300 text-gray-900 rounded focus:ring-blue-500 focus:border-blue-500 cursor-pointer py-0.5 px-1 min-w-[3rem] text-center"></select>
+                            <span id="historyPageTotal">/ 1 頁 (共 0 筆)</span>
+                        </div>
+                        <button id="historyNextBtn" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-3 py-1 rounded font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm">▼</button>
+                     </div>
+                 </div>
+            </div>
+            <div class="overflow-x-auto border border-gray-200 rounded-lg">
+                <table id="historyTable" class="w-full text-sm text-left text-gray-500">
+                    <thead class="text-xs text-gray-700 uppercase bg-gray-50 border-b border-gray-200">
+                        <tr>
+                            <th scope="col" class="px-6 py-3">日期</th>
+                            <th scope="col" class="px-6 py-3">時間</th>
+                            <th scope="col" class="px-6 py-3">班級</th>
+                            <th scope="col" class="px-6 py-3">座號</th>
+                            <th scope="col" class="px-6 py-3">姓名</th>
+                            <th scope="col" class="px-6 py-3">加減分</th>
+                            <th scope="col" class="px-6 py-3">理由</th>
+                            <th scope="col" class="px-6 py-3">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 清除快取按鈕 -->
+        <div id="clearCacheSection" class="text-center hidden pb-8">
+             <button id="clearDataButton" class="w-full max-w-md mx-auto bg-gray-300 hover:bg-gray-400 text-gray-700 font-bold py-2 px-4 rounded-lg btn">重新載入 / 重置本機快取</button>
+        </div>
+    </div>
+    
+    <!-- Modals -->
+    <div id="editRecordModal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <h3 class="text-xl font-bold mb-4">編輯記錄</h3>
+            <div class="space-y-4">
+                <div>
+                    <label for="editScoreInput" class="block mb-2 text-sm font-medium text-gray-900">加減分</label>
+                    <input type="number" id="editScoreInput" class="w-full p-2 border border-gray-300 rounded-lg">
+                </div>
+                <div>
+                    <label for="editReasonInput" class="block mb-2 text-sm font-medium text-gray-900">理由</label>
+                    <div class="relative">
+                        <input type="text" id="editReasonInput" class="w-full p-2 pr-10 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500" placeholder="請點擊選擇或手動輸入理由">
+                        <button type="button" id="reasonDropdownBtn" class="absolute inset-y-0 right-0 px-3 flex items-center text-gray-500 hover:text-gray-700 focus:outline-none">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                        </button>
+                        <ul id="reasonCustomList" class="absolute z-20 w-full bg-white border border-gray-300 rounded-lg mt-1 max-h-48 overflow-y-auto hidden shadow-lg">
+                            <!-- 選項將由 JS 動態產生 -->
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div class="flex justify-end gap-2 mt-6">
+                <button id="cancelEditButton" class="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-lg btn">取消</button>
+                <button id="saveEditButton" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg btn flex items-center justify-center min-w-[5rem]">
+                   <span id="saveEditBtnText">儲存</span>
+                   <span id="saveEditBtnSpinner" class="spinner !border-white !border-b-transparent hidden"></span>
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <div id="deleteConfirmModal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <h3 class="text-xl font-bold mb-4">確認刪除</h3>
+            <p>您確定要刪除這筆記錄嗎？這將直接從雲端資料庫中移除。</p>
+            <div class="flex justify-end gap-2 mt-6">
+                <button id="cancelDeleteButton" class="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-lg btn">取消</button>
+                <button id="confirmDeleteButton" class="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg btn flex items-center justify-center min-w-[7rem]">
+                    <span id="delBtnText">確認刪除</span>
+                    <span id="delBtnSpinner" class="spinner !border-white !border-b-transparent hidden"></span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Batch Score Modal -->
+    <div id="batchScoreModal" class="modal-overlay hidden">
+        <div class="modal-content !max-w-3xl">
+            <h3 class="text-xl font-bold mb-4">批次加扣分</h3>
+            <div class="flex flex-col sm:flex-row gap-4">
+                <div class="w-full sm:w-1/5">
+                    <h4 class="font-semibold mb-2 text-center">已選學生</h4>
+                    <div id="batchStudentList" class="h-48 sm:h-64 overflow-y-auto bg-gray-100 p-2 rounded-lg border"></div>
+                </div>
+                <div class="w-full sm:w-2/5">
+                    <h4 class="font-semibold mb-2 text-center text-green-600">加分事項 (可複選)</h4>
+                    <div id="batchPositiveReasons" class="grid grid-cols-2 gap-2"></div>
+                </div>
+                <div class="w-full sm:w-2/5">
+                    <h4 class="font-semibold mb-2 text-center text-red-600">扣分事項 (可複選)</h4>
+                    <div id="batchNegativeReasons" class="grid grid-cols-2 gap-2"></div>
+                </div>
+            </div>
+            <div class="flex justify-end gap-2 mt-6">
+                <button id="cancelBatchScoreButton" class="bg-gray-400 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded-lg btn">取消</button>
+                <button id="confirmBatchScoreButton" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg btn flex items-center justify-center min-w-[7rem]">
+                    <span id="batchBtnText">送出紀錄</span>
+                    <span id="batchBtnSpinner" class="spinner !border-white !border-b-transparent hidden"></span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Export Score Modal -->
+    <div id="exportScoreModal" class="modal-overlay hidden">
+        <div class="modal-content !max-w-xl">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-xl font-bold text-gray-800" id="exportModalTitle">班級積分總表</h3>
+                <button id="closeExportModalBtn" class="text-gray-400 hover:text-gray-600 text-2xl font-bold focus:outline-none">&times;</button>
+            </div>
+            <p class="text-sm text-gray-500 mb-4">您可以直接點擊下方「複製內容」，將表格貼至 Excel 或 Google 試算表中。</p>
+            <div class="max-h-80 overflow-y-auto border border-gray-200 rounded-lg bg-white shadow-inner">
+                <table class="w-full text-sm text-left text-gray-600">
+                    <thead class="text-xs text-gray-700 uppercase bg-gray-100 sticky top-0 border-b border-gray-200 shadow-sm">
+                        <tr>
+                            <th scope="col" class="px-6 py-3 text-center w-1/4">座號</th>
+                            <th scope="col" class="px-6 py-3 text-center w-2/4">姓名</th>
+                            <th scope="col" class="px-6 py-3 text-center w-1/4">總積分</th>
+                        </tr>
+                    </thead>
+                    <tbody id="exportScoreTableBody">
+                        <!-- 動態生成內容 -->
+                    </tbody>
+                </table>
+            </div>
+            <div class="flex justify-between items-center mt-6">
+                <div class="flex items-center gap-2">
+                    <input type="checkbox" id="copySeatCheckbox" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 cursor-pointer">
+                    <label for="copySeatCheckbox" class="text-sm font-medium text-gray-700 cursor-pointer select-none">複製座號</label>
+                </div>
+                <div class="flex gap-3">
+                    <button id="doneExportBtn" class="bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 px-6 rounded-lg btn transition-colors">關閉</button>
+                    <button id="copyExportDataBtn" class="bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-2 px-6 rounded-lg btn transition-colors shadow-md flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                        <span>複製內容</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script>
+    // ==========================================
+    // 系統與 API 設定
+    // ==========================================
+    
+    // API 連結
+    const API_URL = 'https://script.google.com/macros/s/AKfycbzbF9e2my_1CyIvu71Afy3vgYtO6CVV-pkYT3yyOUWULPwFbT8yVJZxjI7-AYJwGoM/exec';
+    
+    // 學生名單 CSV 連結
+    const STUDENT_LIST_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vR2eoldmBrpfDUsWSbIJiP3gtNNBcktMwwKorG0Qe7d71AJHvuATM3zgyt8pbV69PHHZhZ0Jng6tMmw/pub?gid=171222019&single=true&output=csv';
+    
+    // 加扣分項目
+    const SCORING_ITEMS_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRZEP0OiJ9tiinNvP3HRjeZW4rSCZjQDHr4DMJ9tvMSrLaEUASk_VvBJOtAFQ9ptsmOSorkCSQSHqY1/pub?gid=1605988149&single=true&output=csv';
+    
+    const SEMESTER_START_DATE = '2026/2/23'; 
+    const STORAGE_KEY = 'luckyDrawStudentData';
+    const RECORDS_STORAGE_KEY = 'luckyDrawRecordsData';
+    
+    // ==========================================
+    // 全域變數
+    // ==========================================
+    
+    const chineseNumerals = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10, '十一': 11, '十二': 12 };
+    let records = [];
+    let allStudents = {};
+    let selectedStudents = new Set();
+    let selectedExcludedStudents = new Set();
+    let excludedStudents = new Set();
+    
+    let positiveReasons = [];
+    let negativeReasons = [];
+    let manualScores = new Map(); 
+    const positiveScores = ["+1", "+1", "+1", "+1", "+1", "+1", "+1", "+3"];
+    
+    let isPositiveMode = true;
+    let currentScoringMode = 'draw';
+    let drawnStudents = new Set();
+    let currentWinner = null;
+    let selectedScore = null;
+    let selectedReason = null;
+    let animationInterval = null;
+    let isSpinning = false;
+    let selectedReasons = new Set();
+    let reshuffleCount = 0; 
+    let lastDrawnGender = null; 
+    
+    // 分頁狀態
+    let rawCurrentPage = 1;
+    const RAW_PER_PAGE = 5;
+    let historyCurrentPage = 1;
+    let historyPerPage = 5;
+
+    // DOM 元素參考
+    const classSelector = document.getElementById('classSelector');
+    const studentGrid = document.getElementById('studentGrid');
+    const excludedStudentGrid = document.getElementById('excludedStudentGrid');
+    const gridTitle = document.getElementById('gridTitle');
+    const drawButton = document.getElementById('drawButton');
+    const resultSection = document.getElementById('resultSection');
+    const resultTitle = document.getElementById('resultTitle');
+    const scoreGrid = document.getElementById('scoreGrid');
+    const historySection = document.getElementById('historySection');
+    const historyTable = document.getElementById('historyTable').getElementsByTagName('tbody')[0];
+    const scoreOverviewSection = document.getElementById('scoreOverviewSection');
+    const scoreOverviewList = document.getElementById('scoreOverviewList');
+    const scoreRawRecordsTableBody = document.getElementById('scoreRawRecordsTable').getElementsByTagName('tbody')[0];
+    
+    let recordIndexToDelete = null;
+    let recordIndexToEdit = null;
+
+    // 從 LocalStorage 讀取資料
+    function loadDataFromLocalStorage() {
+       const storedData = localStorage.getItem(STORAGE_KEY);
+       if (storedData) {
+           try {
+               const decodedData = decodeURIComponent(atob(storedData));
+               const parsedData = JSON.parse(decodedData);
+               return parseStudentData(parsedData, false);
+           } catch (e) {
+               console.warn("讀取資料失敗:", e);
+               localStorage.removeItem(STORAGE_KEY);
+               return false;
+           }
+       }
+       return false;
+    }
+
+    function saveDataToLocalStorage(data) {
+       try {
+            const jsonString = JSON.stringify(data);
+            const encodedData = btoa(encodeURIComponent(jsonString));
+            localStorage.setItem(STORAGE_KEY, encodedData);
+       } catch (e) {
+            console.warn("儲存資料失敗:", e);
+       }
+    }
+
+    // 儲存紀錄到 LocalStorage
+    function saveRecordsToLocalStorage() {
+        try {
+            const jsonString = JSON.stringify(records);
+            const encodedData = btoa(encodeURIComponent(jsonString));
+            localStorage.setItem(RECORDS_STORAGE_KEY, encodedData);
+        } catch (e) {
+            console.warn("儲存紀錄失敗:", e);
+        }
+    }
+
+    // 從 LocalStorage 讀取紀錄
+    function loadRecordsFromLocalStorage() {
+        const storedRecords = localStorage.getItem(RECORDS_STORAGE_KEY);
+        if (storedRecords) {
+            try {
+                const decodedData = decodeURIComponent(atob(storedRecords));
+                const allLocalRecords = JSON.parse(decodedData);
+                // 讀取暫存時依然要過濾學期，確保畫面乾淨
+                records = allLocalRecords.filter(r => isRecordInCurrentSemester(r.date));
+            } catch (e) {
+                console.warn("讀取紀錄失敗:", e);
+                localStorage.removeItem(RECORDS_STORAGE_KEY);
+                records = [];
+            }
+        }
+    }
+
+    // ==========================================
+    // API 呼叫共用函式
+    // ==========================================
+
+    function showSync(text = "同步中...") {
+        const ind = document.getElementById('syncIndicator');
+        const spinner = document.getElementById('syncSpinner');
+        const txt = document.getElementById('syncText');
+        ind.className = 'visible syncing';
+        spinner.style.display = 'inline-block';
+        txt.textContent = text;
+    }
+
+    function hideSync(success, text) {
+        const ind = document.getElementById('syncIndicator');
+        const spinner = document.getElementById('syncSpinner');
+        const txt = document.getElementById('syncText');
+        spinner.style.display = 'none';
+        txt.textContent = text;
+        if(success) {
+            ind.className = 'visible success';
+        } else {
+            ind.className = 'visible error';
+        }
+        setTimeout(() => { ind.className = ''; }, 3000);
+    }
+
+    async function apiRequest(action, data = null) {
+        showSync(`正在${action === 'read' ? '讀取' : (action === 'delete' ? '刪除' : '更新')}雲端資料...`);
+        try {
+            const options = {
+                method: action === 'read' ? 'GET' : 'POST',
+                headers: {
+                    'Content-Type': 'text/plain;charset=utf-8',
+                },
+                redirect: 'follow'
+            };
+            
+            if (data) {
+                options.body = JSON.stringify(data);
+            }
+            
+            const url = action === 'read' ? `${API_URL}?action=read` : `${API_URL}?action=${action}`;
+            
+            const response = await fetch(url, options);
+            
+            if (!response.ok) {
+                 throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const result = await response.json();
+            
+            if (result.success) {
+                hideSync(true, '同步成功');
+                return result;
+            } else {
+                throw new Error(result.error || '未知的 API 錯誤');
+            }
+        } catch (err) {
+            console.warn("API 請求失敗 (可能是沙盒環境阻擋 CORS 重新導向):", err.message);
+            hideSync(false, '連線失敗 (使用本機暫存)');
+            return null;
+        }
+    }
+
+    // ==========================================
+    // 初始化與資料載入
+    // ==========================================
+
+    document.addEventListener('DOMContentLoaded', loadInitialData);
+
+    async function loadInitialData() {
+        document.getElementById('loadingStatus').innerHTML = '<span class="spinner !border-blue-500 !border-b-transparent"></span>正在連線至雲端載入所有設定與紀錄...';
+        
+        const [studentDataLoaded, scoringItemsLoaded, apiResult] = await Promise.all([
+            fetchAndParseDataFromUrl(),
+            fetchScoringItems(),
+            apiRequest('read')
+        ]);
+
+        if (!scoringItemsLoaded) {
+            console.warn("使用預設加扣分項目。");
+        }
+
+        populateReasonDropdown();
+        setupReasonDropdown();
+
+        if (apiResult && apiResult.success) {
+            document.getElementById('systemWarning').classList.add('hidden');
+            const allRemoteRecords = apiResult.data;
+            records = allRemoteRecords.filter(r => isRecordInCurrentSemester(r.date));
+            saveRecordsToLocalStorage();
+        } else {
+             console.warn("從 API 載入失敗，已切換至本機暫存模式。");
+             document.getElementById('systemWarning').classList.remove('hidden');
+             loadRecordsFromLocalStorage();
+        }
+
+        if (!studentDataLoaded) {
+            const loadedFromCache = loadDataFromLocalStorage();
+            if (!loadedFromCache) {
+                document.getElementById('loadingStatus').innerHTML = '<span class="text-red-600 font-bold">載入名單失敗，請確認網路與網址設定！</span>';
+                return;
+            }
+        }
+        
+        setupUIWithData();
+    }
+    
+    function isRecordInCurrentSemester(dateString) {
+        if (!SEMESTER_START_DATE) return true;
+        const match = dateString.match(/(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
+        let recordDate;
+        if(match) recordDate = new Date(parseInt(match[1]), parseInt(match[2])-1, parseInt(match[3]));
+        else recordDate = new Date(dateString);
+        
+        const startDate = new Date(SEMESTER_START_DATE);
+        if (isNaN(recordDate.getTime()) || isNaN(startDate.getTime())) return true;
+        
+        recordDate.setHours(0,0,0,0);
+        startDate.setHours(0,0,0,0);
+        return recordDate >= startDate;
+    }
+
+    function parseDateTime(dateStr, timeStr) {
+        const match = dateStr.match(/(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
+        let d = match ? new Date(parseInt(match[1]), parseInt(match[2])-1, parseInt(match[3])) : new Date(dateStr);
+        if (isNaN(d.getTime())) return 0;
+
+        if (timeStr) {
+            let isPM = timeStr.includes('下午') || timeStr.toLowerCase().includes('pm');
+            let isAM = timeStr.includes('上午') || timeStr.toLowerCase().includes('am');
+            let timeMatch = timeStr.match(/(\d{1,2}):(\d{1,2})/);
+            if (timeMatch) {
+                let hours = parseInt(timeMatch[1], 10);
+                let minutes = parseInt(timeMatch[2], 10);
+                if (isPM && hours < 12) hours += 12;
+                if (isAM && hours === 12) hours = 0;
+                d.setHours(hours, minutes, 0, 0);
+            }
+        }
+        return d.getTime();
+    }
+
+    // ==========================================
+    // 自動課表判定邏輯 (已依照照片課表更新)
+    // ==========================================
+
+    // 將時間轉換為目前是第幾節課 (包含下課緩衝時間)
+    function getCurrentPeriod() {
+        const now = new Date();
+        const h = now.getHours();
+        const m = now.getMinutes();
+        const time = h * 60 + m; // 換算成當天經過的分鐘數
+
+        // 判定範圍涵蓋課前下課時間，讓老師在下課打開程式就能選到下一節
+        // 1節: 08:15~09:00 (判定: 08:00~09:00)
+        if (time >= 8*60 + 0  && time < 9*60 + 0)  return 1;
+        // 2節: 09:10~09:55 (判定: 09:00~09:55)
+        if (time >= 9*60 + 0  && time < 9*60 + 55) return 2;
+        // 3節: 10:05~10:50 (判定: 09:55~10:50)
+        if (time >= 9*60 + 55 && time < 10*60 + 50) return 3;
+        // 4節: 11:00~11:45 (判定: 10:50~11:45)
+        if (time >= 10*60 + 50 && time < 11*60 + 45) return 4;
+        // 午休緩衝 -> 5節: 13:10~13:55 (判定: 12:40~13:55)
+        if (time >= 12*60 + 40 && time < 13*60 + 55) return 5;
+        // 6節: 14:05~14:50 (判定: 13:55~14:50)
+        if (time >= 13*60 + 55 && time < 14*60 + 50) return 6;
+        // 7節: 15:00~15:45 (判定: 14:50~15:45)
+        if (time >= 14*60 + 50 && time < 15*60 + 45) return 7;
+        // 8節: 16:00~16:45 (判定: 15:45~16:45)
+        if (time >= 15*60 + 45 && time < 16*60 + 45) return 8;
+        
+        return -1; // 不在上述時間內
+    }
+
+    // 根據星期與節次回傳對應的班級名稱 (已根據 114學年度第1學期課表 建立)
+    function getScheduledClass() {
+        const SCHEDULE = {
+            1: { 1: '九年一班', 3: '八年五班' }, // 星期一
+            2: { 5: '八年六班', 6: '九年三班', 7: '九年七班' }, // 星期二
+            3: { 1: '八年七班', 4: '九年十班', 6: '八年五班', 7: '八年五班', 8: '八年五班' }, // 星期三 (含班會/社團/課輔)
+            4: { 3: '九年五班', 4: '九年六班', 7: '九年九班' }, // 星期四
+            5: { 1: '九年八班', 6: '九年二班', 7: '九年四班' }  // 星期五
+        };
+
+        const now = new Date();
+        const day = now.getDay(); // 0(Sun) ~ 6(Sat)
+        if (day === 0 || day === 6) return null; // 週末不上課
+
+        const period = getCurrentPeriod();
+        if (period === -1) return null; // 目前非上課時間
+
+        return SCHEDULE[day] && SCHEDULE[day][period];
+    }
+
+    // ==========================================
+    // 事件監聽綁定
+    // ==========================================
+    
+    classSelector.addEventListener('change', () => {
+        // 如果使用者手動切換班級，隱藏「自動定位」的提示標籤
+        document.getElementById('autoClassIndicator').classList.add('hidden');
+        excludedStudents.clear();
+        rawCurrentPage = 1; historyCurrentPage = 1;
+        renderStudentGrid(); renderScoreOverview(); renderRawRecords(); renderHistory();
+    });
+    
+    document.getElementById('drawButton').addEventListener('click', startDraw);
+    document.getElementById('clearDataButton').addEventListener('click', () => { location.reload(); });
+    document.getElementById('batchScoreButton').addEventListener('click', handleBatchScoreClick);
+    document.getElementById('cancelBatchScoreButton').addEventListener('click', () => document.getElementById('batchScoreModal').classList.add('hidden'));
+    document.getElementById('confirmBatchScoreButton').addEventListener('click', submitBatchScore);
+    
+    // 主選單選取
+    document.getElementById('selectAllBtn').addEventListener('click', selectAllStudents);
+    document.getElementById('selectBoysBtn').addEventListener('click', () => selectStudentsByGender('男'));
+    document.getElementById('selectGirlsBtn').addEventListener('click', () => selectStudentsByGender('女'));
+    document.getElementById('deselectAllBtn').addEventListener('click', () => { selectedStudents.clear(); updateGridSelection(); });
+
+    // 不參與區選取
+    document.getElementById('exSelectAllBtn').addEventListener('click', exSelectAllStudents);
+    document.getElementById('exSelectBoysBtn').addEventListener('click', () => exSelectStudentsByGender('男'));
+    document.getElementById('exSelectGirlsBtn').addEventListener('click', () => exSelectStudentsByGender('女'));
+    document.getElementById('exDeselectAllBtn').addEventListener('click', () => { selectedExcludedStudents.clear(); updateGridSelection(); });
+
+    // 箭頭移動
+    document.getElementById('moveDownBtn').addEventListener('click', () => {
+        if (selectedStudents.size === 0) return;
+        selectedStudents.forEach(seat => excludedStudents.add(seat));
+        selectedStudents.clear(); renderStudentGrid();
+    });
+    document.getElementById('moveUpBtn').addEventListener('click', () => {
+        if (selectedExcludedStudents.size === 0) return;
+        selectedExcludedStudents.forEach(seat => excludedStudents.delete(seat));
+        selectedExcludedStudents.clear(); renderStudentGrid();
+    });
+
+    // 原始記錄分頁
+    document.getElementById('rawPrevBtn').addEventListener('click', () => { if(rawCurrentPage>1) { rawCurrentPage--; renderRawRecords(); } });
+    document.getElementById('rawNextBtn').addEventListener('click', () => { rawCurrentPage++; renderRawRecords(); });
+    document.getElementById('rawPageSelect').addEventListener('change', (e) => { rawCurrentPage = parseInt(e.target.value, 10); renderRawRecords(); });
+
+    // 歷史記錄分頁
+    document.getElementById('historyPerPageSelect').addEventListener('change', (e) => { historyPerPage = e.target.value === 'all' ? 'all' : parseInt(e.target.value, 10); historyCurrentPage = 1; renderHistory(); });
+    document.getElementById('historyPrevBtn').addEventListener('click', () => { if(historyCurrentPage>1) { historyCurrentPage--; renderHistory(); } });
+    document.getElementById('historyNextBtn').addEventListener('click', () => { historyCurrentPage++; renderHistory(); });
+    document.getElementById('historyPageSelect').addEventListener('change', (e) => { historyCurrentPage = parseInt(e.target.value, 10); renderHistory(); });
+
+    // CRUD Modal 事件
+    document.getElementById('cancelEditButton').addEventListener('click', () => document.getElementById('editRecordModal').classList.add('hidden'));
+    document.getElementById('saveEditButton').addEventListener('click', saveEditToCloud);
+    document.getElementById('cancelDeleteButton').addEventListener('click', () => document.getElementById('deleteConfirmModal').classList.add('hidden'));
+    document.getElementById('confirmDeleteButton').addEventListener('click', deleteRecordFromCloud);
+
+    // 匯出積分視窗事件
+    document.getElementById('exportScoreBtn').addEventListener('click', () => {
+        const selectedClass = classSelector.value;
+        if (!selectedClass || !allStudents[selectedClass]) return;
+
+        document.getElementById('exportModalTitle').textContent = `${selectedClass} 積分總表`;
+        
+        const students = allStudents[selectedClass];
+        const classRecords = records.filter(r => r.className === selectedClass);
+        
+        // 計算該班所有人總分
+        const scoreMap = new Map();
+        classRecords.forEach(r => {
+            if (!isNaN(r.score)) {
+                const current = scoreMap.get(r.seat) || 0;
+                scoreMap.set(r.seat, current + r.score);
+            }
+        });
+
+        // 取得最大座號，以確保從 1 號印到最後一號
+        const maxSeat = students.reduce((max, s) => s.seat > max ? s.seat : max, 0);
+        const studentMap = new Map(students.map(s => [s.seat, s]));
+
+        const tbody = document.getElementById('exportScoreTableBody');
+        tbody.innerHTML = '';
+
+        for (let i = 1; i <= maxSeat; i++) {
+            const student = studentMap.get(i);
+            if (student) {
+                const totalScore = scoreMap.get(i) || 0;
+                const scoreColor = totalScore > 0 ? 'text-green-600' : (totalScore < 0 ? 'text-red-600' : 'text-gray-400');
+                
+                const tr = document.createElement('tr');
+                tr.className = 'border-b hover:bg-gray-50';
+                tr.innerHTML = `
+                    <td class="px-6 py-3 text-center font-medium">${i}</td>
+                    <td class="px-6 py-3 text-center">${student.name}</td>
+                    <td class="px-6 py-3 text-center font-bold ${scoreColor}">${totalScore}</td>
+                `;
+                tbody.appendChild(tr);
+            }
+        }
+
+        document.getElementById('exportScoreModal').classList.remove('hidden');
+    });
+
+    document.getElementById('closeExportModalBtn').addEventListener('click', () => document.getElementById('exportScoreModal').classList.add('hidden'));
+    document.getElementById('doneExportBtn').addEventListener('click', () => document.getElementById('exportScoreModal').classList.add('hidden'));
+    
+    // 複製匯出內容至剪貼簿
+    document.getElementById('copyExportDataBtn').addEventListener('click', () => {
+        const tbody = document.getElementById('exportScoreTableBody');
+        const includeSeat = document.getElementById('copySeatCheckbox').checked;
+        let text = ''; 
+        
+        tbody.querySelectorAll('tr').forEach(tr => {
+            const tds = tr.querySelectorAll('td');
+            const seat = tds[0].innerText;
+            const score = tds[2].innerText;
+            
+            if (includeSeat) {
+                text += `${seat}\t${score}\n`;
+            } else {
+                text += `${score}\n`;
+            }
+        });
+        
+        const el = document.createElement('textarea');
+        el.value = text;
+        document.body.appendChild(el);
+        el.select();
+        document.execCommand('copy');
+        document.body.removeChild(el);
+        
+        const btnText = document.querySelector('#copyExportDataBtn span');
+        const oldText = btnText.innerText;
+        btnText.innerText = '已複製！';
+        setTimeout(() => btnText.innerText = oldText, 2000);
+    });
+
+    // ==========================================
+    // 渲染與 UI 更新
+    // ==========================================
+
+    function setupUIWithData() {
+        document.getElementById('fileImportSection').style.display = 'none';
+        document.getElementById('draw-area').classList.remove('hidden');
+        document.getElementById('clearCacheSection').classList.remove('hidden');
+        populateClassSelector();
+    }
+    
+    function populateClassSelector() {
+        classSelector.innerHTML = '';
+        
+        // 您的任教班級清單 (根據課表萃取，過濾掉不需要顯示的班級)
+        const myClasses = [
+            '九年一班', '九年二班', '九年三班', '九年四班', '九年五班', 
+            '九年六班', '九年七班', '九年八班', '九年九班', '九年十班', 
+            '八年五班', '八年六班', '八年七班',
+            // 防呆處理，加入可能出現的數字代碼形式
+            '901', '902', '903', '904', '905', '906', '907', '908', '909', '910',
+            '805', '806', '807'
+        ];
+
+        // 只保留有在任教清單中的班級，精簡下拉選單空間
+        let classNames = Object.keys(allStudents)
+            .filter(className => myClasses.some(mc => className.includes(mc) || mc.includes(className)))
+            .sort((a, b) => getNumericValue(a) - getNumericValue(b));
+
+        // 防呆：如果雲端名單的格式完全無法配對上（例如名稱超怪異），保險起見還是把所有班級列出來避免全空
+        if (classNames.length === 0) {
+            classNames = Object.keys(allStudents).sort((a, b) => getNumericValue(a) - getNumericValue(b));
+        }
+
+        classNames.forEach(className => {
+            const option = document.createElement('option');
+            option.value = className; option.textContent = className;
+            classSelector.appendChild(option);
+        });
+        
+        // 自動課表判定邏輯：載入時尋找現在應該要上的班級
+        const autoClassCode = getScheduledClass();
+        let matchedClass = null;
+
+        if (autoClassCode) {
+            matchedClass = classNames.find(c => c === autoClassCode || c.includes(autoClassCode));
+        }
+        
+        if (matchedClass) {
+            classSelector.value = matchedClass;
+            document.getElementById('autoClassIndicator').classList.remove('hidden'); // 顯示閃亮的提示標籤
+        } else if (classNames.length > 0) {
+            classSelector.value = classNames[0];
+        }
+
+        renderStudentGrid(); renderScoreOverview(); renderRawRecords(); renderHistory();
+    }
+    
+    function getNumericValue(text) {
+        const match = text.match(/([一二三四五六七八九十]+|[0-9]+)/);
+        if (!match) return 999;
+        const numPart = match[1];
+        if (chineseNumerals[numPart]) return chineseNumerals[numPart];
+        const numeric = parseInt(numPart, 10);
+        if (!isNaN(numeric)) return numeric;
+        if (numPart.startsWith('十')) return 10 + (chineseNumerals[numPart.substring(1)] || 0);
+        return 999;
+    }
+
+    function renderStudentGrid() {
+        clearSelection();
+        lastDrawnGender = null;
+        const selectedClass = classSelector.value;
+        if (!selectedClass) return;
+        gridTitle.textContent = `${selectedClass} 學生名單`;
+        studentGrid.innerHTML = ''; excludedStudentGrid.innerHTML = '';
+        
+        const students = allStudents[selectedClass];
+        const studentMap = new Map(students.map(s => [s.seat, s]));
+        const maxSeat = students.reduce((max, s) => s.seat > max ? s.seat : max, 0);
+        
+        for (let i = 1; i <= Math.ceil(maxSeat / 10) * 10; i++) {
+            const student = studentMap.get(i);
+            if (student) {
+                if (excludedStudents.has(i)) {
+                    // 主區佔位
+                    const emptyCell = document.createElement('div');
+                    emptyCell.className = 'student-cell border border-gray-200 p-2 rounded-md h-20 flex flex-col justify-center items-center bg-gray-50 pointer-events-none opacity-60';
+                    emptyCell.innerHTML = `<span class="text-gray-400 font-bold text-lg">${i}</span><span class="text-xs text-gray-400">移出</span>`;
+                    studentGrid.appendChild(emptyCell);
+                    // 移出區渲染
+                    const exCell = createStudentCard(student, true);
+                    excludedStudentGrid.appendChild(exCell);
+                } else {
+                    // 主區渲染
+                    const cell = createStudentCard(student, false);
+                    studentGrid.appendChild(cell);
+                }
+            } else if (i <= maxSeat) {
+                const emptyCell = document.createElement('div');
+                emptyCell.className = 'student-cell border border-transparent p-2 rounded-md h-20 flex flex-col justify-center items-center bg-gray-50 pointer-events-none';
+                emptyCell.innerHTML = `<span class="text-gray-400">${i}</span><span class="text-xs text-gray-400">空號</span>`;
+                studentGrid.appendChild(emptyCell);
+            } else {
+                studentGrid.appendChild(document.createElement('div'));
+            }
+        }
+        resetDraw();
+    }
+    
+    function createStudentCard(student, isExcluded) {
+        const cell = document.createElement('div');
+        cell.id = isExcluded ? `seat-ex-${student.seat}` : `seat-${student.seat}`;
+        cell.className = `student-cell border border-gray-300 p-2 rounded-md h-20 flex flex-col justify-center items-center relative ${isExcluded ? 'w-20 flex-shrink-0' : ''}`;
+        cell.dataset.seat = student.seat;
+        if (student.gender === '男') cell.classList.add('bg-green-100');
+        else if (student.gender === '女') cell.classList.add('bg-pink-100');
+
+        cell.innerHTML = `
+            <input type="checkbox" class="student-checkbox absolute top-1 right-1 h-5 w-5 z-10 rounded border-gray-400 text-blue-600 focus:ring-blue-500">
+            <div class="content-wrapper flex flex-col justify-center items-center h-full w-full">
+                <span class="font-bold text-lg pointer-events-none">${student.seat}</span>
+                <span class="text-xs sm:text-sm pointer-events-none">${student.name}</span>
+            </div>
+        `;
+        
+        cell.querySelector('.student-checkbox').addEventListener('change', () => {
+            isExcluded ? toggleExcludedStudentSelection(student) : toggleStudentSelection(student);
+        });
+        cell.querySelector('.content-wrapper').addEventListener('click', () => handleManualScore(student));
+        return cell;
+    }
+
+    function renderScoreOverview() {
+        const selectedClass = classSelector.value;
+        scoreOverviewList.innerHTML = '';
+        const status = document.getElementById('scoreOverviewStatus');
+        if (!selectedClass) { scoreOverviewSection.classList.add('hidden'); return; }
+
+        const classRecords = records.filter(r => r.className === selectedClass);
+        if (classRecords.length === 0) {
+            status.classList.remove('hidden');
+            status.innerHTML = `本班級目前尚無積分記錄。`;
+            scoreOverviewSection.classList.remove('hidden'); 
+            return;
+        }
+        status.classList.add('hidden');
+        scoreOverviewSection.classList.remove('hidden');
+
+        const studentScores = new Map();
+        classRecords.forEach(record => {
+            if (!studentScores.has(record.seat)) {
+                let sName = `座號 ${record.seat}`;
+                const detail = (allStudents[selectedClass] || []).find(s => s.seat === record.seat);
+                if(detail) sName = detail.name;
+                studentScores.set(record.seat, { name: sName, pos: 0, neg: 0, total: 0 });
+            }
+            const data = studentScores.get(record.seat);
+            if (!isNaN(record.score)) {
+                if (record.score > 0) data.pos += record.score;
+                else data.neg += Math.abs(record.score); 
+                data.total += record.score;
+            }
+        });
+
+        Array.from(studentScores.keys()).sort((a, b) => a - b).forEach(seat => {
+            const data = studentScores.get(seat);
+            if (data.pos === 0 && data.neg === 0) return; 
+            const row = document.createElement('div');
+            row.className = 'flex items-center bg-gray-50 p-2 rounded-lg border border-gray-200';
+            let barsHtml = '';
+            for(let i=0; i<data.pos; i++) barsHtml += '<div class="score-bar-unit score-bar-green"></div>';
+            for(let i=0; i<data.neg; i++) barsHtml += '<div class="score-bar-unit score-bar-red"></div>';
+
+            row.innerHTML = `
+                <div class="w-16 flex-shrink-0 font-bold text-gray-700">${seat}號</div>
+                <div class="w-20 flex-shrink-0 text-gray-600 truncate mr-2">${data.name}</div>
+                <div class="flex-grow flex flex-wrap items-center mr-2">${barsHtml}</div>
+                <div class="w-12 flex-shrink-0 text-right font-bold ${data.total >= 0 ? 'text-green-600' : 'text-red-600'}">
+                    ${data.total > 0 ? '+' : ''}${data.total}
+                </div>
+            `;
+            scoreOverviewList.appendChild(row);
+        });
+    }
+    
+    function renderRawRecords() {
+        const selectedClass = classSelector.value;
+        scoreRawRecordsTableBody.innerHTML = '';
+        const msg = document.getElementById('noRawRecordsMessage');
+        const prev = document.getElementById('rawPrevBtn');
+        const next = document.getElementById('rawNextBtn');
+        const sel = document.getElementById('rawPageSelect');
+        const tot = document.getElementById('rawPageTotal');
+
+        if (!selectedClass) return;
+        const classRecords = records.filter(r => r.className === selectedClass);
+        
+        if (classRecords.length === 0) {
+            msg.classList.remove('hidden');
+            rawCurrentPage = 1; prev.disabled = true; next.disabled = true;
+            sel.disabled = true; sel.innerHTML = '<option value="1">1</option>';
+            tot.textContent = `/ 1 頁 (共 0 筆)`;
+            return;
+        }
+        msg.classList.add('hidden');
+
+        const sorted = [...classRecords].sort((a, b) => parseDateTime(b.date, b.time) - parseDateTime(a.date, a.time));
+        const total = sorted.length;
+        const totalPages = Math.ceil(total / RAW_PER_PAGE) || 1;
+        if (rawCurrentPage > totalPages) rawCurrentPage = totalPages;
+        
+        const start = (rawCurrentPage - 1) * RAW_PER_PAGE;
+        sorted.slice(start, start + RAW_PER_PAGE).forEach(r => {
+            const row = scoreRawRecordsTableBody.insertRow();
+            const scoreClass = r.score > 0 ? 'text-green-600 font-bold' : 'text-red-600 font-bold';
+
+            row.innerHTML = `
+                <td class="px-3 py-2">${r.seat}</td>
+                <td class="px-3 py-2">${r.name}</td>
+                <td class="px-3 py-2 ${scoreClass}">${r.score > 0 ? '+' : ''}${r.score}</td>
+                <td class="px-3 py-2">${r.reason}</td>
+                <td class="px-3 py-2 text-xs">${r.date} ${r.time}</td>
+            `;
+        });
+
+        sel.innerHTML = '';
+        for (let i = 1; i <= totalPages; i++) {
+            const opt = document.createElement('option'); opt.value = i; opt.textContent = i;
+            sel.appendChild(opt);
+        }
+        sel.value = rawCurrentPage; sel.disabled = false;
+        prev.disabled = (rawCurrentPage <= 1);
+        next.disabled = (rawCurrentPage >= totalPages);
+        tot.textContent = `/ ${totalPages} 頁 (共 ${total} 筆)`;
+    }
+
+    function renderHistory() {
+        const selectedClass = classSelector.value;
+        historyTable.innerHTML = '';
+        const prev = document.getElementById('historyPrevBtn');
+        const next = document.getElementById('historyNextBtn');
+        const sel = document.getElementById('historyPageSelect');
+        const tot = document.getElementById('historyPageTotal');
+
+        if (!selectedClass) return;
+
+        const sorted = records.map((r, index) => ({ r, oIdx: index }))
+                              .filter(item => item.r.className === selectedClass)
+                              .sort((a, b) => parseDateTime(b.r.date, b.r.time) - parseDateTime(a.r.date, a.r.time));
+
+        const total = sorted.length;
+        let totalPages = 1;
+        let pageData = sorted;
+
+        if (historyPerPage !== 'all') {
+            totalPages = Math.ceil(total / historyPerPage) || 1;
+            if (historyCurrentPage > totalPages) historyCurrentPage = totalPages;
+            if (historyCurrentPage < 1) historyCurrentPage = 1;
+            const start = (historyCurrentPage - 1) * historyPerPage;
+            pageData = sorted.slice(start, start + historyPerPage);
+        } else { historyCurrentPage = 1; }
+
+        if (total === 0) {
+            const row = historyTable.insertRow();
+            row.innerHTML = `<td colspan="8" class="px-6 py-8 text-center text-gray-500 font-medium bg-gray-50 border-b-0">本班級尚無歷史記錄</td>`;
+        } else {
+            pageData.forEach(item => {
+                const r = item.r;
+                const row = historyTable.insertRow();
+
+                row.innerHTML = `
+                    <td class="px-6 py-4">${r.date}</td>
+                    <td class="px-6 py-4 text-xs">${r.time}</td>
+                    <td class="px-6 py-4">${r.className}</td>
+                    <td class="px-6 py-4">${r.seat}</td>
+                    <td class="px-6 py-4">${r.name}</td>
+                    <td class="px-6 py-4 font-bold ${r.score > 0 ? 'text-green-600' : 'text-red-600'}">${r.score > 0 ? '+' : ''}${r.score}</td>
+                    <td class="px-6 py-4">${r.reason}</td>
+                    <td class="px-6 py-4 text-sm font-medium">
+                        <button onclick="confirmEdit(${item.oIdx})" class="text-indigo-600 hover:text-indigo-900 mr-4">編輯</button>
+                        <button onclick="confirmDelete(${item.oIdx})" class="text-red-600 hover:text-red-900">刪除</button>
+                    </td>
+                `;
+            });
+        }
+        
+        document.getElementById('historySection').classList.toggle('hidden', records.length === 0);
+
+        sel.innerHTML = '';
+        for (let i = 1; i <= totalPages; i++) {
+            const opt = document.createElement('option'); opt.value = i; opt.textContent = i;
+            sel.appendChild(opt);
+        }
+        sel.value = historyCurrentPage;
+
+        if (historyPerPage === 'all' || total === 0) {
+            prev.disabled = true; next.disabled = true; sel.disabled = true;
+            tot.textContent = `/ 1 頁 (共 ${total} 筆)`;
+        } else {
+            prev.disabled = (historyCurrentPage <= 1); next.disabled = (historyCurrentPage >= totalPages); sel.disabled = false;
+            tot.textContent = `/ ${totalPages} 頁 (共 ${total} 筆)`;
+        }
+    }
+
+
+    // ==========================================
+    // 核心邏輯 (抽籤、加扣分與雲端同步)
+    // ==========================================
+
+    async function writeRecordsToCloud(newRecords) {
+        if(newRecords.length === 0) return;
+        
+        const result = await apiRequest('create', newRecords);
+        
+        if(result && result.success) {
+            const reloadResult = await apiRequest('read');
+            if(reloadResult && reloadResult.success) {
+                 records = reloadResult.data.filter(r => isRecordInCurrentSemester(r.date));
+                 saveRecordsToLocalStorage();
+                 renderHistory();
+                 renderScoreOverview(); 
+                 renderRawRecords();
+            }
+        } else {
+            console.warn('寫入雲端失敗。');
+            alert('寫入雲端失敗，請檢查網路連線。');
+        }
+    }
+
+    function toggleStudentSelection(student) {
+        selectedStudents.has(student.seat) ? selectedStudents.delete(student.seat) : selectedStudents.add(student.seat);
+        updateGridSelection();
+    }
+    function toggleExcludedStudentSelection(student) {
+        selectedExcludedStudents.has(student.seat) ? selectedExcludedStudents.delete(student.seat) : selectedExcludedStudents.add(student.seat);
+        updateGridSelection();
+    }
+    function selectAllStudents() {
+        (allStudents[classSelector.value]||[]).forEach(s => { if(!excludedStudents.has(s.seat)) selectedStudents.add(s.seat); });
+        updateGridSelection();
+    }
+    function selectStudentsByGender(g) {
+        selectedStudents.clear();
+        (allStudents[classSelector.value]||[]).forEach(s => { if(s.gender === g && !excludedStudents.has(s.seat)) selectedStudents.add(s.seat); });
+        updateGridSelection();
+    }
+    function exSelectAllStudents() {
+        (allStudents[classSelector.value]||[]).forEach(s => { if(excludedStudents.has(s.seat)) selectedExcludedStudents.add(s.seat); });
+        updateGridSelection();
+    }
+    function exSelectStudentsByGender(g) {
+        selectedExcludedStudents.clear();
+        (allStudents[classSelector.value]||[]).forEach(s => { if(s.gender === g && excludedStudents.has(s.seat)) selectedExcludedStudents.add(s.seat); });
+        updateGridSelection();
+    }
+
+    function updateGridSelection() {
+        document.querySelectorAll('#studentGrid .student-cell').forEach(cell => {
+            const seat = parseInt(cell.dataset.seat);
+            const box = cell.querySelector('.student-checkbox');
+            if(selectedStudents.has(seat)) { cell.classList.add('ring-4', cell.classList.contains('bg-pink-100')?'ring-red-600':'ring-green-600'); if(box) box.checked=true; }
+            else { cell.classList.remove('ring-4','ring-green-600','ring-red-600'); if(box) box.checked=false; }
+        });
+        document.querySelectorAll('#excludedStudentGrid .student-cell').forEach(cell => {
+            const seat = parseInt(cell.dataset.seat);
+            const box = cell.querySelector('.student-checkbox');
+            if(selectedExcludedStudents.has(seat)) { cell.classList.add('ring-4', cell.classList.contains('bg-pink-100')?'ring-red-600':'ring-green-600'); if(box) box.checked=true; }
+            else { cell.classList.remove('ring-4','ring-green-600','ring-red-600'); if(box) box.checked=false; }
+        });
+        const batchBtn = document.getElementById('batchScoreButton');
+        if(selectedStudents.size > 0) {
+            document.getElementById('batchScoreContainer').classList.remove('hidden');
+            batchBtn.textContent = `為已選 ${selectedStudents.size} 位學生加分`;
+        } else { document.getElementById('batchScoreContainer').classList.add('hidden'); }
+    }
+
+    function clearSelection() {
+        selectedStudents.clear(); selectedExcludedStudents.clear(); updateGridSelection();
+    }
+
+    // --- 批次加分邏輯 ---
+    function handleBatchScoreClick() {
+        if (selectedStudents.size === 0) return;
+        selectedReasons.clear();
+        document.getElementById('batchStudentList').innerHTML = Array.from(selectedStudents)
+            .map(seat => allStudents[classSelector.value].find(s => s.seat === seat))
+            .sort((a,b)=>a.seat-b.seat)
+            .map(s => `<div class="p-1 px-2 rounded-md text-sm mb-1 ${s.gender==='男'?'bg-green-200':'bg-pink-200'}">#${s.seat}-${s.name}</div>`).join('');
+        
+        const posDiv = document.getElementById('batchPositiveReasons'); posDiv.innerHTML = '';
+        positiveReasons.forEach(r => {
+            const b = document.createElement('button'); b.textContent=r; b.className='batch-reason-btn p-3 rounded-lg text-sm bg-green-200 btn';
+            b.onclick = (e) => {
+                if(selectedReasons.has(r)) { selectedReasons.delete(r); b.classList.remove('selected-pos');}
+                else { selectedReasons.add(r); b.classList.add('selected-pos');}
+            }; posDiv.appendChild(b);
+        });
+        const negDiv = document.getElementById('batchNegativeReasons'); negDiv.innerHTML = '';
+        negativeReasons.forEach(r => {
+            const b = document.createElement('button'); b.textContent=r; b.className='batch-reason-btn p-3 rounded-lg text-sm bg-pink-200 btn';
+            b.onclick = (e) => {
+                if(selectedReasons.has(r)) { selectedReasons.delete(r); b.classList.remove('selected-neg');}
+                else { selectedReasons.add(r); b.classList.add('selected-neg');}
+            }; negDiv.appendChild(b);
+        });
+        document.getElementById('batchScoreModal').classList.remove('hidden');
+    }
+
+    function submitBatchScore() {
+        if (selectedReasons.size === 0) return alert('請至少選擇一項理由！');
+        
+        let totalScore = 0; const reasons = [];
+        selectedReasons.forEach(r => { totalScore += manualScores.get(r); reasons.push(r); });
+        
+        const now = new Date();
+        const d = now.toLocaleDateString('zh-TW'); const t = now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
+        const reasonStr = reasons.join('、');
+        
+        const newRecords = Array.from(selectedStudents).map(seat => {
+            const s = allStudents[classSelector.value].find(st => st.seat === seat);
+            return { date: d, time: t, className: classSelector.value, seat: s.seat, name: s.name, score: totalScore, reason: reasonStr };
+        });
+        
+        document.getElementById('batchScoreModal').classList.add('hidden');
+        clearSelection();
+        writeRecordsToCloud(newRecords); // 送出
+    }
+
+    // --- 單人手動/抽籤加分 ---
+    function handleManualScore(student) {
+        resetDraw();
+        currentWinner = { ...student, className: classSelector.value };
+        currentScoringMode = 'manual'; isPositiveMode = true;
+        updateScoreGrid('manual');
+        document.getElementById('draw-area').insertBefore(resultSection, document.getElementById('main-content'));
+        resultSection.classList.remove('hidden');
+        resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function startDraw() {
+        if (animationInterval) return;
+        resetDraw();
+        const c = classSelector.value;
+        let pool = allStudents[c].filter(s => !excludedStudents.has(s.seat) && (document.getElementById('immunityToggle').checked ? !drawnStudents.has(s.seat) : true));
+        
+        if (document.getElementById('ranmaToggle').checked && lastDrawnGender) {
+            const opp = pool.filter(s => s.gender === (lastDrawnGender === '男' ? '女' : '男'));
+            if(opp.length > 0) pool = opp;
+        }
+
+        if (pool.length === 0) return alert('此班級已無學生可抽！');
+        
+        drawButton.disabled = true; drawButton.textContent = '抽籤中...'; drawButton.classList.add('bg-gray-400');
+        let lastEl = null;
+        animationInterval = setInterval(() => {
+            if(lastEl) lastEl.c.classList.remove(lastEl.h);
+            const rnd = pool[Math.floor(Math.random() * pool.length)];
+            const cell = document.getElementById(`seat-${rnd.seat}`);
+            if(cell) {
+                const h = rnd.gender === '女' ? 'highlight-draw-pink' : 'highlight-draw-green';
+                cell.classList.add(h); lastEl = {c: cell, h};
+            }
+        }, 100);
+
+        setTimeout(() => {
+            clearInterval(animationInterval); animationInterval = null;
+            if(lastEl) lastEl.c.classList.remove(lastEl.h);
+            const winner = pool[Math.floor(Math.random() * pool.length)];
+            document.getElementById(`seat-${winner.seat}`).classList.add('highlight-winner');
+            currentWinner = { ...winner, className: c };
+            currentScoringMode = 'draw'; isPositiveMode = true;
+            updateScoreGrid('draw');
+            document.getElementById('draw-area').insertBefore(resultSection, document.getElementById('main-content'));
+            resultSection.classList.remove('hidden');
+            drawButton.disabled = false; drawButton.textContent = '重新抽籤'; drawButton.classList.remove('bg-gray-400');
+            resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 3000);
+    }
+    
+    function shuffleArray(arr) { for(let i=arr.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[arr[i],arr[j]]=[arr[j],arr[i]];} return arr; }
+    
+    function getNegativeScores() {
+        if(reshuffleCount===1) return ["再抽", "-2", "-2", "-1", "-1", "-1", "-1", "-1"];
+        if(reshuffleCount>=2) return ["-2", "-2", "-2", "-1", "-1", "-1", "-1", "-1"];
+        return ["-1", "-1", "-1", "-1", "-2", "機會", "機會", "再抽"];
+    }
+
+    function updateScoreGrid(mode) {
+        scoreGrid.innerHTML = '';
+        if (mode === 'draw') {
+            resultTitle.innerHTML = '🎉 恭喜中獎 🎉';
+            resultTitle.className = 'text-4xl font-extrabold mb-6 bg-gradient-to-r from-pink-500 via-red-500 to-yellow-500 text-transparent bg-clip-text animate-pulse';
+        } else {
+            resultTitle.innerHTML = '手動加扣分 (點擊中間切換)';
+            resultTitle.className = 'text-2xl font-bold mb-4';
+        }
+        
+        const gridOrder = [0, 1, 2, 7, -1, 3, 6, 5, 4];
+        const colors = shuffleArray(['bg-red-200', 'bg-yellow-200', 'bg-green-200', 'bg-blue-200', 'bg-indigo-200', 'bg-purple-200', 'bg-pink-200', 'bg-orange-200']);
+        const scores = isPositiveMode ? [...positiveScores] : getNegativeScores();
+        const shufScores = shuffleArray(scores);
+        const items = isPositiveMode ? positiveReasons : negativeReasons;
+        
+        let cIdx = 0;
+        for (let i = 0; i < 9; i++) {
+            const cell = document.createElement('div'); cell.classList.add('score-cell');
+            if (i === 4) {
+                cell.className += ` ${isPositiveMode?'bg-green-100 border-green-300 text-green-800':'bg-pink-100 border-pink-300 text-pink-800'} border-2 text-xl font-extrabold p-2 rounded-lg flex flex-col items-center justify-center cursor-pointer`;
+                cell.innerHTML = `${currentWinner.seat}號<br>${currentWinner.name}`;
+                cell.onclick = () => { if(!isSpinning) { isPositiveMode = !isPositiveMode; reshuffleCount=0; updateScoreGrid(currentScoringMode); } };
+            } else {
+                const itemIdx = gridOrder[i];
+                if(mode === 'draw') {
+                    cell.className += ` p-2 rounded-lg flex items-center justify-center text-4xl font-semibold text-gray-700 btn can-hover ${colors[cIdx]}`;
+                    cell.textContent = itemIdx + 1; cell.dataset.score = shufScores[itemIdx]; cell.dataset.color = colors[cIdx];
+                    cell.onclick = (e) => revealScores(e.target);
+                    cIdx++;
+                } else {
+                    cell.className += ` p-2 rounded-lg flex items-center justify-center text-sm font-semibold text-gray-700 btn can-hover ${isPositiveMode?'bg-green-200 hover:bg-green-300':'bg-pink-200 hover:bg-pink-300'}`;
+                    cell.textContent = items[itemIdx];
+                    cell.onclick = () => submitSingleRecord(manualScores.get(items[itemIdx]), items[itemIdx]);
+                }
+            }
+            scoreGrid.appendChild(cell);
+        }
+    }
+
+    async function revealScores(cell) {
+        if(isSpinning) return; isSpinning = true;
+        Array.from(scoreGrid.children).filter(el=>el.dataset.score).forEach(btn=>{btn.onclick=null; btn.classList.remove('can-hover');});
+        
+        const val = cell.dataset.score;
+        cell.textContent = val; cell.classList.remove(cell.dataset.color);
+        
+        if (isPositiveMode) {
+            cell.classList.add('text-red-600', 'font-bold', 'blinking', 'bg-yellow-300');
+            Array.from(scoreGrid.children).filter(el=>el!==cell&&el.dataset.score).forEach(c=>{c.textContent=c.dataset.score; c.classList.remove(c.dataset.color); c.classList.add('bg-gray-200','text-gray-500');});
+            setTimeout(() => submitSingleRecord(parseInt(val), "抽獎獎勵"), 1500);
+        } else {
+            if(val==="機會" || val==="再抽") {
+                cell.classList.add('bg-yellow-300', 'blinking');
+                setTimeout(() => { reshuffleCount++; updateScoreGrid('draw'); isSpinning=false; }, 1500);
+            } else {
+                cell.classList.add('text-white', 'font-bold', 'bg-gray-700');
+                setTimeout(() => submitSingleRecord(parseInt(val), "抽獎懲罰"), 1500);
+            }
+        }
+    }
+
+    function submitSingleRecord(score, reason) {
+        const now = new Date();
+        const r = {
+            date: now.toLocaleDateString('zh-TW'), time: now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }),
+            className: currentWinner.className, seat: currentWinner.seat, name: currentWinner.name,
+            score: score, reason: reason
+        };
+        
+        if (document.getElementById('immunityToggle').checked && currentScoringMode === 'draw') {
+            drawnStudents.add(r.seat); lastDrawnGender = currentWinner.gender;
+            const c = document.getElementById(`seat-${r.seat}`); if(c) c.classList.add('drawn-student');
+        }
+        
+        isSpinning = false; if(currentScoringMode !== 'draw') resetDraw();
+        
+        writeRecordsToCloud([r]); // 送出單筆
+    }
+
+    function resetDraw() {
+        resultSection.classList.add('hidden');
+        document.querySelectorAll('.student-cell').forEach(c => c.classList.remove('highlight-winner'));
+        currentWinner = null; isSpinning = false; reshuffleCount = 0;
+        drawButton.textContent = '開始抽籤'; drawButton.disabled = false; drawButton.classList.remove('bg-gray-400');
+        clearSelection();
+    }
+
+
+    // ==========================================
+    // 雲端修改與刪除 API 呼叫
+    // ==========================================
+
+    function confirmEdit(index) {
+        const r = records[index];
+        if(!r._rowNumber) return alert('此紀錄為暫存狀態，尚未寫入資料庫，請稍候同步完成或重整頁面後再試。');
+        
+        recordIndexToEdit = index;
+        document.getElementById('editScoreInput').value = r.score;
+        document.getElementById('editReasonInput').value = r.reason;
+        document.getElementById('editRecordModal').classList.remove('hidden');
+    }
+
+    async function saveEditToCloud() {
+        if (recordIndexToEdit === null) return;
+        const newScore = parseInt(document.getElementById('editScoreInput').value);
+        const newReason = document.getElementById('editReasonInput').value.trim();
+        if (isNaN(newScore) || !newReason) return alert('請輸入有效分數與理由！');
+        
+        const r = records[recordIndexToEdit];
+        
+        // UI Loading
+        const btn = document.getElementById('saveEditButton');
+        const txt = document.getElementById('saveEditBtnText');
+        const spin = document.getElementById('saveEditBtnSpinner');
+        btn.disabled = true; txt.classList.add('hidden'); spin.classList.remove('hidden');
+
+        const updateData = { _rowNumber: r._rowNumber, score: newScore, reason: newReason };
+        const result = await apiRequest('update', updateData);
+        
+        if (result && result.success) {
+            r.score = newScore; r.reason = newReason; // 更新本地
+            saveRecordsToLocalStorage();
+            renderHistory(); renderScoreOverview(); renderRawRecords();
+            document.getElementById('editRecordModal').classList.add('hidden');
+        } else {
+            alert('修改失敗，這可能是網路或權限問題，請稍後再試。');
+        }
+        
+        btn.disabled = false; txt.classList.remove('hidden'); spin.classList.add('hidden');
+        recordIndexToEdit = null;
+    }
+
+    function confirmDelete(index) {
+        const r = records[index];
+        if(!r._rowNumber) return alert('此紀錄為暫存狀態，尚未寫入資料庫，請稍候同步完成或重整頁面後再試。');
+        recordIndexToDelete = index;
+        document.getElementById('deleteConfirmModal').classList.remove('hidden');
+    }
+
+    async function deleteRecordFromCloud() {
+        if (recordIndexToDelete === null) return;
+        const r = records[recordIndexToDelete];
+
+        // UI Loading
+        const btn = document.getElementById('confirmDeleteButton');
+        const txt = document.getElementById('delBtnText');
+        const spin = document.getElementById('delBtnSpinner');
+        btn.disabled = true; txt.classList.add('hidden'); spin.classList.remove('hidden');
+
+        const delData = { _rowNumber: r._rowNumber };
+        const result = await apiRequest('delete', delData);
+        
+        if (result && result.success) {
+            records.splice(recordIndexToDelete, 1); // 移除本地
+            saveRecordsToLocalStorage();
+            renderHistory(); renderScoreOverview(); renderRawRecords();
+            document.getElementById('deleteConfirmModal').classList.add('hidden');
+        } else {
+            alert('刪除失敗，這可能是網路或權限問題，請稍後再試。');
+        }
+
+        btn.disabled = false; txt.classList.remove('hidden'); spin.classList.add('hidden');
+        recordIndexToDelete = null;
+    }
+
+    // ==========================================
+    // 輔助功能
+    // ==========================================
+    
+    // 取得 CSV 資料 (名單與選項)
+    async function fetchScoringItems() {
+        try {
+            const res = await fetch(`${SCORING_ITEMS_URL}&_=${Date.now()}`);
+            if(!res.ok) return false;
+            const lines = (await res.text()).split(/\r\n|\n/).filter(l=>l.trim());
+            const data = lines.map(l=>l.split(',').map(i=>i.trim()));
+            
+            data.forEach(r => {
+                if(r.length >= 3) {
+                    const id = parseInt(r[0]); const score = parseInt(r[2]);
+                    if(!isNaN(id) && r[1] && !isNaN(score)) {
+                        manualScores.set(r[1], score);
+                        if(id>=1 && id<=8) positiveReasons.push(r[1]);
+                        else if(id>=9 && id<=16) negativeReasons.push(r[1]);
+                    }
+                }
+            });
+            
+            return positiveReasons.length > 0;
+        } catch(e) { return false; }
+    }
+
+    // 建立自訂下拉選單內容的函式
+    function populateReasonDropdown() {
+        const list = document.getElementById('reasonCustomList');
+        if (!list) return;
+        
+        // 匯集所有的加分項目與扣分項目 (使用 Set 確保不重複)
+        const allReasons = new Set([...positiveReasons, ...negativeReasons, "抽獎獎勵", "抽獎懲罰"]);
+
+        let optionsHtml = '';
+        allReasons.forEach(reason => {
+            if (reason) {
+                optionsHtml += `<li class="px-4 py-2 hover:bg-blue-50 hover:text-blue-700 cursor-pointer text-sm transition-colors text-gray-700" data-value="${reason}">${reason}</li>`;
+            }
+        });
+        list.innerHTML = optionsHtml;
+
+        // 綁定選項點擊事件：點擊選項後，將值塞入 input 並關閉清單
+        list.querySelectorAll('li').forEach(li => {
+            li.addEventListener('click', function(e) {
+                e.stopPropagation();
+                document.getElementById('editReasonInput').value = this.dataset.value;
+                list.classList.add('hidden');
+            });
+        });
+    }
+
+    // 設定自訂下拉選單的開關行為 (點擊按鈕或輸入框時顯示，點擊外部時關閉)
+    function setupReasonDropdown() {
+        const input = document.getElementById('editReasonInput');
+        const btn = document.getElementById('reasonDropdownBtn');
+        const list = document.getElementById('reasonCustomList');
+
+        const toggleList = (e) => {
+            e.stopPropagation();
+            list.classList.toggle('hidden');
+        };
+
+        btn.addEventListener('click', toggleList);
+        input.addEventListener('click', (e) => {
+            e.stopPropagation();
+            list.classList.remove('hidden');
+        });
+
+        // 點擊外部時關閉下拉選單
+        document.addEventListener('click', (e) => {
+            if (!list.classList.contains('hidden') && e.target !== input && e.target !== btn && !list.contains(e.target)) {
+                list.classList.add('hidden');
+            }
+        });
+    }
+
+    function parseStudentData(data, shouldSave) {
+        const tempStudents = {};
+        const isArrayOfArrays = Array.isArray(data) && Array.isArray(data[0]);
+        
+        if (isArrayOfArrays) {
+            let startIndex = 0;
+            if (data[0] && data[0][1] && String(data[0][1]).trim() === '座號') {
+                startIndex = 1;
+            }
+            for(let i = startIndex; i < data.length; i++) {
+                 const row = data[i];
+                 if (row && row.length >= 5) {
+                     const [className, seat, , gender, name] = row.map(String);
+                     if (className && seat && name && !isNaN(parseInt(seat))) {
+                         if (!tempStudents[className]) tempStudents[className] = [];
+                         tempStudents[className].push({ seat: parseInt(seat), name: name, gender: gender });
+                     }
+                 }
+            }
+        } else { 
+             Object.assign(tempStudents, data);
+        }
+
+        if (Object.keys(tempStudents).length > 0) {
+            allStudents = tempStudents;
+            if (shouldSave) {
+                saveDataToLocalStorage(allStudents);
+            }
+            return true;
+        } else {
+            if (shouldSave) console.warn('無法從雲端解析名單資料，請確認格式。');
+            return false;
+        }
+    }
+
+    async function fetchAndParseDataFromUrl() {
+        try {
+            const res = await fetch(`${STUDENT_LIST_URL}&_=${Date.now()}`);
+            if(!res.ok) return false;
+            const lines = (await res.text()).split(/\r\n|\n/).filter(l=>l.trim());
+            const data = lines.map(l=>l.split(',').map(i=>i.trim()));
+            return parseStudentData(data, true);
+        } catch(e) { return false; }
+    }
+    
+</script>
+</body>
+</html>
